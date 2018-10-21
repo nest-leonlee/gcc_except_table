@@ -54,6 +54,15 @@ int verbose = 1;
 
 #define DW_EH_PE_omit     0xff  /* GNU.  Means no value present. */
 
+const char *get_enc_string(int enc)
+{
+    if (enc == DW_EH_PE_udata4) return "DW_EH_PE_udata";
+    else if (enc == (DW_EH_PE_pcrel | DW_EH_PE_sdata4)) return "DW_EH_PE_pcrel | DW_EH_PE_sdata4";
+    else if (enc == (DW_EH_PE_datarel | DW_EH_PE_sdata4)) return "DW_EH_PE_datarel | DW_EH_PE_sdata4";
+
+    return "Unknown";
+}
+
 struct eh_frame_hdr_fde_entry
 {
     int32_t initial_loc;
@@ -148,7 +157,7 @@ int open_elf(const char *filepath, struct elf *elf)
     // read ELF header
     ERR_THROW(read(elf->fd, &elf->eh, sizeof(elf->eh)));
 
-    assert(elf->eh.e_type == ET_EXEC);
+    assert(elf->eh.e_type == ET_EXEC || elf->eh.e_type == ET_DYN);
     assert(elf->eh.e_shnum > 0);
     assert(elf->eh.e_shentsize <= sizeof(Elf64_Shdr));
 
@@ -264,7 +273,7 @@ int get_fde_offset_from_pc(struct elf *elf, uint64_t pc, uint64_t *fde_offset, u
     ERR_THROW(read(elf->fd, eh_idx.fde_entries, sizeof(struct eh_frame_hdr_fde_entry) * eh_idx.fde_count));
 
     assert((eh_frame_hdr_offset + 4 + eh_idx.eh_frame_ptr) == eh_frame_offset);
-    VERBOSE(printf("table_enc = 0x%x\n", eh_idx.table_enc));
+    VERBOSE(printf("table_enc = 0x%x (%s)\n", eh_idx.table_enc, get_enc_string(eh_idx.table_enc)));
     VERBOSE(printf("fde_count = %d\n", eh_idx.fde_count));
 
     assert(eh_idx.table_enc == (DW_EH_PE_datarel | DW_EH_PE_sdata4));
@@ -414,7 +423,7 @@ int get_lsda_offset_from_fde(struct elf* elf, uint64_t fde_offset, uint64_t fde_
                 memcpy(&fde->cie.personality_routine, cie_data_ptr, sizeof(uint32_t));
                 cie_data_ptr += sizeof(uint32_t);
 
-                VERBOSE(printf("  personality encoding = 0x%x\n", fde->cie.personality_enc));
+                VERBOSE(printf("  personality encoding = 0x%x (%s)\n", fde->cie.personality_enc, get_enc_string(fde->cie.personality_enc)));
                 VERBOSE(printf("  personality routine = 0x%lx\n", fde->cie.personality_routine));
             }
 
@@ -423,7 +432,7 @@ int get_lsda_offset_from_fde(struct elf* elf, uint64_t fde_offset, uint64_t fde_
                 memcpy(&fde->cie.fde_enc, cie_data_ptr, sizeof(uint8_t));
                 cie_data_ptr += sizeof(uint8_t);
 
-                VERBOSE(printf("  fde encoding = 0x%x\n", fde->cie.fde_enc));
+                VERBOSE(printf("  fde encoding = 0x%x (%s)\n", fde->cie.fde_enc, get_enc_string(fde->cie.fde_enc)));
             }
 
             if (fde->cie.augmentation & CIE_AUG_LSDA_ENC)
@@ -431,7 +440,7 @@ int get_lsda_offset_from_fde(struct elf* elf, uint64_t fde_offset, uint64_t fde_
                 memcpy(&fde->cie.lsda_enc, cie_data_ptr, sizeof(uint8_t));
                 cie_data_ptr += sizeof(uint8_t);
 
-                VERBOSE(printf("  LSDA encoding = 0x%x\n", fde->cie.lsda_enc));
+                VERBOSE(printf("  LSDA encoding = 0x%x (%s)\n", fde->cie.lsda_enc, get_enc_string(fde->cie.lsda_enc)));
             }
             else
             {
@@ -449,7 +458,7 @@ int get_lsda_offset_from_fde(struct elf* elf, uint64_t fde_offset, uint64_t fde_
     VERBOSE(printf("\n"));
     VERBOSE(printf("[FDE] 0x%lx\n", fde->addr));
 
-    assert(fde->cie.fde_enc == DW_EH_PE_udata4);
+    assert((fde->cie.fde_enc == DW_EH_PE_udata4) || (fde->cie.fde_enc == (DW_EH_PE_pcrel | DW_EH_PE_sdata4)));
 
     memcpy(&fde->initial_loc, fde_data_ptr, sizeof(uint32_t));
     fde_data_ptr += sizeof(uint32_t);
@@ -467,18 +476,30 @@ int get_lsda_offset_from_fde(struct elf* elf, uint64_t fde_offset, uint64_t fde_
         length = decodeULEB128(fde_data_ptr, &n, NULL, NULL);
         fde_data_ptr += n;
 
-        assert(fde->cie.lsda_enc == (DW_EH_PE_pcrel | DW_EH_PE_sdata4));
-
         memcpy(&fde->lsda_ptr, fde_data_ptr, sizeof(int32_t));
         fde_data_ptr += sizeof(int32_t);
 
         uint64_t gcc_except_table_addr = elf->sh_gcc_except_table->sh_addr;  // virtual address of .gcc_except_table section
         uint64_t gcc_except_table_offset = get_gcc_except_table_offset(elf); // file offset of .gcc_excep_table section
 
-        *lsda_offset = fde->lsda_ptr - gcc_except_table_addr;
-        *lsda_offset += gcc_except_table_offset;
+        switch (fde->cie.fde_enc)
+        {
+            case DW_EH_PE_udata4:
+                *lsda_offset = fde->lsda_ptr - gcc_except_table_addr;
+                *lsda_offset += gcc_except_table_offset;
+                break;
+
+            case (DW_EH_PE_pcrel | DW_EH_PE_sdata4):
+                *lsda_offset = fde->lsda_ptr + fde_offset + (fde_data_ptr - fde_data);
+                break;
+
+            default:
+                assert(0);
+                break;
+        }
 
         VERBOSE(printf("  LSDA ptr = %d (0x%x)\n", fde->lsda_ptr, fde->lsda_ptr));
+        VERBOSE(printf("  LSDA offset of object file = %ld (0x%lx)\n", *lsda_offset, *lsda_offset));
     }
 
     free(fde_data);
@@ -506,6 +527,8 @@ int get_landing_pad(struct elf *elf, uint64_t pc, struct fde *fde, uint64_t lsda
     VERBOSE(printf("\n"));
     VERBOSE(printf(".gcc_except_table\n"));
     VERBOSE(printf("----------\n"));
+
+    assert(fde->cie.lsda_enc == (DW_EH_PE_pcrel | DW_EH_PE_sdata4));
 
     ERR_THROW(lseek64(elf->fd, lsda_offset, SEEK_SET));
 

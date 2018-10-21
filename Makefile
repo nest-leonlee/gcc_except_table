@@ -1,8 +1,12 @@
 .PHONY: build clean
 
+SUBDIRS = test
+
 build:
 	@gcc -g  gcc_except_table.c -o gcc_except_table
+	@$(MAKE) -C $(SUBDIRS)
 
 clean:
-	@rm gcc_except_table
+	@rm -f gcc_except_table
+	@$(MAKE) -C $(SUBDIRS) $@
 
