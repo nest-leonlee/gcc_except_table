@@ -1,5 +1,5 @@
 # About
-Getting the corresponding landing pad for C++ exception in object file including executable file and shared library. This tool parses .gcc_except_table from a specific object file.
+Getting the corresponding landing pad for C++ exception in object file including executable file and shared library. This tool parses **_.gcc_except_table_** from a specific object file.
 
 # build and run tests
 <pre><code>
